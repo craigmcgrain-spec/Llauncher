@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Llauncher
+Comment=llama-server configurator and runner (PySide6)
+Exec=uv run --project /home/mcgrain/Projects/Llauncher llauncher
+Icon=/home/mcgrain/Projects/Llauncher/assets/icon.png
+Terminal=false
+Categories=Utility;
+Keywords=launcher;llama.cpp;llm;server;ai;
+StartupNotify=true
