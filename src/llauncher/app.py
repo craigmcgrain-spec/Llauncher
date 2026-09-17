@@ -57,9 +57,10 @@ def find_icon() -> Path | None:
 
 
 def parse_args(argv: list[str] | None = None):
-    p = argparse.ArgumentParser(prog="llauncher", description="llama-server configurator and runner")
+    p = argparse.ArgumentParser(prog="llauncher", description="unsloth configurator and runner")
     p.add_argument("--profile", default="", help="Open with this saved profile selected")
     p.add_argument("--center", action="store_true", help="(legacy) center window on screen")
+    p.add_argument("--high-gfx", action="store_true", help="Allow Qt GPU rendering (default is CPU/software rendering)")
     return p.parse_args(argv)
 
 
@@ -69,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile:
         settings.last_profile = args.profile
 
+    if not args.high_gfx:
+        # CPU-only GUI: keep Qt off the GPU unless explicitly asked otherwise.
+        import os
+
+        os.environ.setdefault("QT_XCB_FORCE_SOFTWARE_OPENGL", "1")
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
+        os.environ.setdefault("QT_OPENGL", "software")
     # High-DPI niceties
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

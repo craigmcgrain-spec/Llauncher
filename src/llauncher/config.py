@@ -5,6 +5,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from llauncher.presets import DEFAULT_BINARY
+
 
 CONFIG_DIR = Path.home() / ".config" / "llauncher"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
@@ -19,7 +21,7 @@ class Settings:
     # extra .desktop dirs to scan (colon-separated env LLAUNCHER_EXTRA_DIRS also works)
     extra_dirs: tuple[str, ...] = ()
     # llama-server configurator
-    server_binary: str = "llama-server"
+    server_binary: str = DEFAULT_BINARY
     models_dir: str = ""
     last_profile: str = "default"
 

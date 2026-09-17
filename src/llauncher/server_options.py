@@ -9,7 +9,7 @@ Each spec drives one auto-generated form widget. Only non-default
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ embedded server console (QProcess) with Run/Stop, stdin input.
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -31,10 +32,12 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 
-from llauncher.command import build_argv, to_bash, to_script
+from llauncher.command import build_argv, parse_command, to_bash, to_script
 from llauncher.config import Settings
+from llauncher.presets import DEFAULT_BINARY
 from llauncher.server_options import CATEGORIES, OPTIONS, OptionSpec, uncovered_flags
 from llauncher.server_profile import (
     ServerProfile,
@@ -54,7 +57,7 @@ class MainWindow(QMainWindow):
         self._loading = False
         self.proc: QProcess | None = None
 
-        self.setWindowTitle("Llauncher — llama-server configurator")
+        self.setWindowTitle("Llauncher — unsloth configurator")
         self.resize(1280, 800)
 
         central = QWidget(self)
@@ -105,7 +108,7 @@ class MainWindow(QMainWindow):
         self.profile_combo.currentTextChanged.connect(self._on_profile_selected)
         lay.addWidget(self.profile_combo, 1)
         for text, slot in (("New", self.new_profile), ("Save", self.save_current),
-                           ("Delete", self.delete_current)):
+                           ("Delete", self.delete_current), ("Import", self.import_command)):
             btn = QPushButton(text, self)
             btn.clicked.connect(slot)
             lay.addWidget(btn)
@@ -120,8 +123,8 @@ class MainWindow(QMainWindow):
         # row 1: server binary
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Server binary:"))
-        self.binary_edit = QLineEdit(self.settings.server_binary or "llama-server", self)
-        self.binary_edit.setPlaceholderText("llama-server (or llama serve wrapper / full path)")
+        self.binary_edit = QLineEdit(self.settings.server_binary or DEFAULT_BINARY, self)
+        self.binary_edit.setPlaceholderText("unsloth run (or llama serve / full path)")
         self.binary_edit.setToolTip("Tip: you can paste a full path directly here (Ctrl+V)")
         self.binary_edit.textChanged.connect(self.refresh_bash)
         row1.addWidget(self.binary_edit, 1)
@@ -205,8 +208,9 @@ class MainWindow(QMainWindow):
             combo.addItem(default_txt, "")
             for choice in spec.choices:
                 combo.addItem(choice, choice)
-            combo.setToolTip(self._tooltip(spec))
-            combo.currentIndexChanged.connect(self.refresh_bash)
+            combo.setEditable(True)
+            combo.setToolTip(self._tooltip(spec) + "\nYou can also type a custom value.")
+            combo.currentTextChanged.connect(self.refresh_bash)
             return combo
         edit = QLineEdit(self)
         edit.setPlaceholderText(f"default: {spec.default}" if spec.default else "unset (server default)")
@@ -258,7 +262,7 @@ class MainWindow(QMainWindow):
         self.console.setReadOnly(True)
         self.console.setObjectName("mono")
         self.console.setFont(QFont("monospace", 10))
-        self.console.setMaximumBlockCount(2000)
+        self.console.setMaximumBlockCount(500)
         lay.addWidget(self.console, 2)
 
         stdin_row = QHBoxLayout()
@@ -280,7 +284,7 @@ class MainWindow(QMainWindow):
         name = self.profile_combo.currentText().strip() or "default"
         return ServerProfile(
             name=name,
-            server_binary=self.binary_edit.text().strip() or "llama-server",
+            server_binary=self.binary_edit.text().strip() or DEFAULT_BINARY,
             model=self._selected_model(),
             models_dir=self.models_dir_edit.text().strip(),
             options=self.collect_options(),
@@ -307,11 +311,18 @@ class MainWindow(QMainWindow):
                 if w.isChecked() != spec.default_on:
                     out[flag] = "true" if w.isChecked() else "false"
             elif isinstance(w, QComboBox):
-                if w.currentData():
-                    out[flag] = str(w.currentData())
-            elif isinstance(w, QLineEdit):
-                if w.text().strip():
-                    out[flag] = w.text().strip()
+                # Editable: typed text does NOT move currentIndex, so the
+                # selected item's data may be stale. Trust it only when the
+                # visible text still matches the selected item.
+                text = w.currentText().strip()
+                placeholder = w.itemText(0).strip() if w.count() else ""
+                idx = w.currentIndex()
+                if idx > 0 and w.itemText(idx).strip() == text:
+                    out[flag] = str(w.itemData(idx))
+                elif text and text != placeholder:
+                    out[flag] = text  # custom typed value
+            elif isinstance(w, QLineEdit) and w.text().strip():
+                out[flag] = w.text().strip()
         return out
 
     def apply_profile(self, profile: ServerProfile) -> None:
@@ -329,7 +340,7 @@ class MainWindow(QMainWindow):
                         w.setChecked(str(val).lower() in ("1", "true", "yes", "on"))
                 elif isinstance(w, QComboBox):
                     idx = w.findData(val) if val else 0
-                    w.setCurrentIndex(idx if idx >= 0 else 0)
+                    w.setCurrentIndex(max(idx, 0))
                     if val and idx < 0:  # value not in list (e.g. from --help import)
                         w.addItem(val, val)
                         w.setCurrentIndex(w.count() - 1)
@@ -412,6 +423,35 @@ class MainWindow(QMainWindow):
         delete_profile(name)
         self._refresh_profile_list(select="default")
 
+    def import_command(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Import command")
+        dialog.resize(600, 300)
+        lay = QVBoxLayout(dialog)
+        lay.addWidget(QLabel("Paste an unsloth run command to parse flags into a profile:"))
+        text_edit = QPlainTextEdit(dialog)
+        text_edit.setPlaceholderText("unsloth run --model /path/to/model.gguf --alias MyModel --ctx-size 4096 ...")
+        lay.addWidget(text_edit, 1)
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("Import", dialog)
+        cancel_btn = QPushButton("Cancel", dialog)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        cmd = text_edit.toPlainText().strip()
+        if not cmd:
+            return
+        try:
+            profile = parse_command(cmd)
+            self.apply_profile(profile)
+            self.statusBar().showMessage(f"Imported: {profile.server_binary} model={profile.model or '(none)'} options={len(profile.options)}", 5000)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import error", f"Could not parse command:\n{exc}")
+
     # ---------------- models dir ----------------
     def _on_models_dir_changed(self) -> None:
         self.rescan_models()
@@ -457,7 +497,7 @@ class MainWindow(QMainWindow):
 
     def browse_binary(self) -> None:
         dlg = self._native_dialog(
-            title="Select llama-server binary",
+            title="Select unsloth binary",
             start=self._dialog_start_dir(self.binary_edit.text()),
             file_mode=QFileDialog.FileMode.ExistingFile,
         )
@@ -489,7 +529,6 @@ class MainWindow(QMainWindow):
                 rel = str(m.relative_to(base)) if base.is_dir() else str(m)
             except ValueError:
                 rel = str(m)
-            size_mb = m.stat().st_size / 1e6 if m.exists() else 0
             self.model_combo.addItem(f"{rel}", str(m))
         # show relative path but store absolute in UserData; display text fix:
         for i in range(self.model_combo.count()):
@@ -527,9 +566,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Exported {path}", 4000)
 
     def check_help_coverage(self) -> None:
-        binary = self.binary_edit.text().strip() or "llama-server"
+        binary = self.binary_edit.text().strip() or DEFAULT_BINARY
         try:
-            out = subprocess.run([binary, "--help"], capture_output=True, text=True, timeout=15)
+            out = subprocess.run([*shlex.split(binary), "--help"], capture_output=True, text=True, timeout=15, check=False)
             text = (out.stdout or "") + (out.stderr or "")
         except (OSError, subprocess.SubprocessError) as exc:
             QMessageBox.warning(self, "Coverage check", f"Could not run '{binary} --help':\n{exc}")
@@ -558,6 +597,9 @@ class MainWindow(QMainWindow):
         self.console.appendPlainText(f"$ {to_bash(self.current_profile())}\n")
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        # Run with the plain system environment so the launched process
+        # behaves exactly like pasting the generated command in a terminal.
+        self.proc.setEnvironment(QProcess.systemEnvironment())
         self.proc.readyReadStandardOutput.connect(self._on_proc_output)
         self.proc.finished.connect(self._on_proc_finished)
         self.proc.start(argv[0], argv[1:])
@@ -601,6 +643,6 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Server is not running", 3000)
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+    def closeEvent(self, event) -> None:
         self.stop_server()
         super().closeEvent(event)

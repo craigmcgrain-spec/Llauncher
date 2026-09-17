@@ -33,9 +33,16 @@ cd /home/mcgrain/Projects/Llauncher
 uv sync
 uv run llauncher
 # open with a profile: uv run llauncher --profile coder
+# allow Qt GPU rendering (default is CPU/software rendering): uv run llauncher --high-gfx
 ```
 
-1. Set **Server binary** (`llama-server` on PATH, or Browse to a full path).
+> The generated command is never modified: no flags are injected, removed, or
+> rewritten — what you see in Generated bash is exactly what runs (unknown
+> flags on import are kept verbatim in Extra raw args). CPU-only applies to
+> the Llauncher GUI itself, which defaults to Qt software rendering (pass
+> `--high-gfx` to allow GPU rendering).
+
+1. Set **Server binary** (`unsloth run` on PATH, or Browse to a full path).
 2. Set **Models dir** (e.g. `~/models`) → Rescan → pick a **Model** (or set `--hf-repo`).
 3. Tick flags across the tabs. Watch the **Generated bash** update.
 4. Press **▶ Run**. Output streams into the embedded console. **■ Stop** to kill.
@@ -61,7 +68,6 @@ QT_QPA_PLATFORM=offscreen uv run python -m llauncher --help
 
 ## "ollama.cpp" naming
 
-The app targets **llama.cpp's `llama-server`** (often typed as "ollama.cpp").
-Ollama (the Go project) uses different flags — point *Server binary* at
-`llama-server` / `llama serve` wrapper. Any binary-specific flags can go in
-**Extra raw args**.
+The app generates **`unsloth run`** commands (old `llama serve` /
+`llama-server` commands still import and run). Any binary-specific flags can
+go in **Extra raw args**.

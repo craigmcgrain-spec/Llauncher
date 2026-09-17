@@ -6,6 +6,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from llauncher.presets import DEFAULT_BINARY
+
 
 PROFILES_DIR = Path.home() / ".config" / "llauncher" / "profiles"
 
@@ -20,7 +22,7 @@ class ServerProfile:
     """Everything needed to build + run one llama-server command."""
 
     name: str = "default"
-    server_binary: str = "llama-server"
+    server_binary: str = DEFAULT_BINARY
     model: str = ""  # .gguf path or "" when using --hf-repo
     models_dir: str = ""  # user-defined models library
     options: dict[str, str] = field(default_factory=dict)  # flag -> value ("true"/"" for bool)
@@ -33,7 +35,7 @@ class ServerProfile:
     def from_dict(cls, data: dict) -> ServerProfile:
         return cls(
             name=str(data.get("name", "default")),
-            server_binary=str(data.get("server_binary", "llama-server")),
+            server_binary=str(data.get("server_binary", DEFAULT_BINARY)),
             model=str(data.get("model", "")),
             models_dir=str(data.get("models_dir", "")),
             options=dict(data.get("options", {})),
