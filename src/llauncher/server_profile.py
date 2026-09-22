@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
+import os
 from pathlib import Path
 
 from llauncher.presets import DEFAULT_BINARY
@@ -73,14 +74,37 @@ def list_profiles() -> list[str]:
     return names
 
 
+# Cache keyed by the resolved models-dir path. Scanning a large .gguf library
+# is the most expensive operation in the app and only needs to happen once
+# until the directory path changes (rescan is user-initiated), so results are
+# memoized. A single process never mutates its own cache.
+_MODEL_CACHE: dict[str, list[Path]] = {}
+
+
+def invalidate_models_cache() -> None:
+    """Drop cached scans (used only in tests / hot-reload scenarios)."""
+    _MODEL_CACHE.clear()
+
+
 def scan_models(models_dir: str, recursive: bool = True) -> list[Path]:
     """List .gguf files under the user-defined models directory."""
     base = Path(models_dir).expanduser()
     if not models_dir.strip() or not base.is_dir():
         return []
-    pattern = "**/*" if recursive else "*"
+    key = str(base)
+    cached = _MODEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    # os.walk yields entries incrementally and matches the ".gguf" suffix
+    # case-insensitively (rglob is case-sensitive and lists every file first).
     try:
-        files = [p for p in base.glob(pattern) if p.is_file() and p.suffix.lower() == ".gguf"]
-        return sorted(files, key=lambda p: str(p).lower())
+        files = []
+        for root, _dirs, names in os.walk(base):
+            for name in names:
+                if name.lower().endswith(".gguf"):
+                    files.append(Path(root) / name)
+        result = sorted(files, key=lambda p: str(p).lower())
     except OSError:
         return []
+    _MODEL_CACHE[key] = result
+    return result

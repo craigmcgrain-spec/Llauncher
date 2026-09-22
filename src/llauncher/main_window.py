@@ -10,7 +10,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt
+from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 from llauncher.command import build_argv, parse_command, to_bash, to_script
 from llauncher.config import Settings
 from llauncher.presets import DEFAULT_BINARY
-from llauncher.server_options import CATEGORIES, OPTIONS, OptionSpec, uncovered_flags
+from llauncher.server_options import CATEGORIES, OPTIONS, OptionSpec, parse_help_flags, uncovered_flags
 from llauncher.server_profile import (
     ServerProfile,
     delete_profile,
@@ -56,6 +56,10 @@ class MainWindow(QMainWindow):
         self._fields: dict[str, tuple[OptionSpec, QWidget]] = {}
         self._loading = False
         self.proc: QProcess | None = None
+        # Debounce live-bash rebuild so typing in any of the ~100 fields fires
+        # one build instead of one per keystroke. Direct calls (init, profile
+        # load, models-dir change) stay immediate.
+        self._debounce: QTimer | None = None
 
         self.setWindowTitle("Llauncher — unsloth configurator")
         self.resize(1280, 800)
@@ -98,7 +102,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_profile_list(select=settings.last_profile or "default")
         self.rescan_models()
-        self.refresh_bash()
+        self._debounced_refresh()
 
     # ---------------- top bars ----------------
     def _build_profile_bar(self) -> QHBoxLayout:
@@ -126,7 +130,7 @@ class MainWindow(QMainWindow):
         self.binary_edit = QLineEdit(self.settings.server_binary or DEFAULT_BINARY, self)
         self.binary_edit.setPlaceholderText("unsloth run (or llama serve / full path)")
         self.binary_edit.setToolTip("Tip: you can paste a full path directly here (Ctrl+V)")
-        self.binary_edit.textChanged.connect(self.refresh_bash)
+        self.binary_edit.textChanged.connect(self._debounced_refresh)
         row1.addWidget(self.binary_edit, 1)
         browse_bin = QPushButton("Browse…", self)
         browse_bin.clicked.connect(self.browse_binary)
@@ -150,7 +154,7 @@ class MainWindow(QMainWindow):
         self.model_combo = QComboBox(self)
         self.model_combo.setEditable(True)
         self.model_combo.setMinimumWidth(260)
-        self.model_combo.currentTextChanged.connect(self.refresh_bash)
+        self.model_combo.currentTextChanged.connect(self._debounced_refresh)
         row2.addWidget(self.model_combo, 1)
         rescan = QPushButton("Rescan", self)
         rescan.clicked.connect(self.rescan_models)
@@ -200,7 +204,7 @@ class MainWindow(QMainWindow):
             box = QCheckBox(f"Default: {'on' if spec.default_on else 'off'}", self)
             box.setChecked(spec.default_on)
             box.setToolTip(self._tooltip(spec))
-            box.toggled.connect(self.refresh_bash)
+            box.toggled.connect(self._debounced_refresh)
             return box
         if spec.kind == "choice":
             combo = QComboBox(self)
@@ -210,13 +214,13 @@ class MainWindow(QMainWindow):
                 combo.addItem(choice, choice)
             combo.setEditable(True)
             combo.setToolTip(self._tooltip(spec) + "\nYou can also type a custom value.")
-            combo.currentTextChanged.connect(self.refresh_bash)
+            combo.currentTextChanged.connect(self._debounced_refresh)
             return combo
         edit = QLineEdit(self)
         edit.setPlaceholderText(f"default: {spec.default}" if spec.default else "unset (server default)")
         edit.setClearButtonEnabled(True)
         edit.setToolTip(self._tooltip(spec))
-        edit.textChanged.connect(self.refresh_bash)
+        edit.textChanged.connect(self._debounced_refresh)
         return edit
 
     # ---------------- right panel ----------------
@@ -228,7 +232,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(QLabel("Extra raw args (appended verbatim):"))
         self.extra_edit = QLineEdit(self)
         self.extra_edit.setPlaceholderText("--verbose --jinja ...")
-        self.extra_edit.textChanged.connect(self.refresh_bash)
+        self.extra_edit.textChanged.connect(self._debounced_refresh)
         lay.addWidget(self.extra_edit)
 
         lay.addWidget(QLabel("Generated bash:"))
@@ -236,7 +240,6 @@ class MainWindow(QMainWindow):
         self.bash_view.setReadOnly(True)
         self.bash_view.setObjectName("mono")
         self.bash_view.setFont(QFont("monospace", 10))
-        self.bash_view.setMaximumBlockCount(200)
         lay.addWidget(self.bash_view, 1)
 
         btn_row = QHBoxLayout()
@@ -262,7 +265,6 @@ class MainWindow(QMainWindow):
         self.console.setReadOnly(True)
         self.console.setObjectName("mono")
         self.console.setFont(QFont("monospace", 10))
-        self.console.setMaximumBlockCount(500)
         lay.addWidget(self.console, 2)
 
         stdin_row = QHBoxLayout()
@@ -359,7 +361,16 @@ class MainWindow(QMainWindow):
                 self.model_combo.setCurrentText(shown)
         finally:
             self._loading = False
-        self.refresh_bash()
+        self._debounced_refresh()
+
+    def _debounced_refresh(self) -> None:
+        # Coalesce a burst of edits into a single rebuild.
+        if self._debounce is not None:
+            self._debounce.stop()
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self.refresh_bash)
+        self._debounce.start(150)
 
     def refresh_bash(self) -> None:
         if self._loading:
@@ -455,7 +466,7 @@ class MainWindow(QMainWindow):
     # ---------------- models dir ----------------
     def _on_models_dir_changed(self) -> None:
         self.rescan_models()
-        self.refresh_bash()
+        self._debounced_refresh()
 
     def _dialog_start_dir(self, text: str) -> str:
         """Start location for file dialogs: current field value if valid, else home."""
@@ -529,15 +540,9 @@ class MainWindow(QMainWindow):
                 rel = str(m.relative_to(base)) if base.is_dir() else str(m)
             except ValueError:
                 rel = str(m)
-            self.model_combo.addItem(f"{rel}", str(m))
-        # show relative path but store absolute in UserData; display text fix:
-        for i in range(self.model_combo.count()):
-            full = self.model_combo.itemData(i)
-            try:
-                rel = str(Path(full).relative_to(base))
-            except (ValueError, TypeError):
-                rel = full
-            self.model_combo.setItemText(i, rel)
+            # addItem stores the absolute path in UserData and shows the
+            # relative path; no second pass needed.
+            self.model_combo.addItem(rel, str(m))
         if current:
             self.model_combo.setCurrentText(current)
         self.model_combo.blockSignals(False)
@@ -574,7 +579,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Coverage check", f"Could not run '{binary} --help':\n{exc}")
             return
         missing = uncovered_flags(text)
-        total = len(__import__("llauncher.server_options", fromlist=["parse_help_flags"]).parse_help_flags(text))
+        total = len(parse_help_flags(text))
         if missing:
             QMessageBox.information(
                 self, "Coverage check",
@@ -616,7 +621,6 @@ class MainWindow(QMainWindow):
             return
         data = bytes(self.proc.readAllStandardOutput()).decode("utf-8", errors="replace")
         if data:
-            self.console.moveCursor(QTextCursor.End)
             self.console.insertPlainText(data)
             self.console.moveCursor(QTextCursor.End)
 
